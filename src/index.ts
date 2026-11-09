@@ -239,7 +239,7 @@ function authorizationPage(values: {
     "<p><strong>" + escapeHtml(values.clientId) + "</strong> が、設定済みのFirestoreデータベース（keywords / tweets）にアクセスします。</p>",
     "<p>許可される操作はFirestoreの読み取り・作成・更新・削除です。</p>",
     error,
-    '<form method="post" action="' + escapeHtml(values.action) + '">',
+    '<form method="post">',
     hidden,
     '<label>管理用アクセスキー（Cloudflareの MCP_AUTH_TOKEN）',
     '<input name="access_key" type="password" autocomplete="current-password" required></label>',
@@ -255,7 +255,7 @@ function authorizationPage(values: {
       Pragma: "no-cache",
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://firestore-mcp.youfree731.workers.dev; base-uri 'none'; frame-ancestors 'none'"
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     }
   });
 }
@@ -295,7 +295,6 @@ async function authorizeGet(request: Request, env: Env): Promise<Response> {
   }
 
   return authorizationPage({
-    action: url.origin + "/oauth/authorize",
     clientId,
     redirectUri: redirectUri.toString(),
     state,
