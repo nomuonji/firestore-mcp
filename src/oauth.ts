@@ -106,6 +106,31 @@ export function sameAccessKey(value: string, expected: string | undefined): bool
   return Boolean(expected && safeEqual(value, expected));
 }
 
+/**
+ * Validate the owner password from a browser-native HTTP Basic challenge.
+ * The secret is carried in the HTTPS Authorization header, never in the URL
+ * or an HTML form body.
+ */
+export function basicOwnerAuthorizationMatches(
+  header: string | null,
+  expected: string | undefined
+): boolean {
+  if (!header || !expected) return false;
+  const match = /^Basic\s+([A-Za-z0-9+/]+={0,2})$/i.exec(header.trim());
+  if (!match) return false;
+
+  try {
+    const binary = atob(match[1]!);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const credentials = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    const separator = credentials.indexOf(":");
+    if (separator < 0 || credentials.slice(0, separator) !== "owner") return false;
+    return sameAccessKey(credentials.slice(separator + 1), expected);
+  } catch {
+    return false;
+  }
+}
+
 /** Restrict OAuth redirects to ChatGPT's callback domain (plus loopback for local testing). */
 export function safeOAuthRedirect(value: string): URL | null {
   try {

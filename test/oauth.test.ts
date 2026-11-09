@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  basicOwnerAuthorizationMatches,
   parseOAuthScopes,
   pkceChallenge,
   safeOAuthRedirect,
@@ -59,4 +60,15 @@ test("supports a non-empty plain-text owner key such as the configured dashboard
   assert.equal(verified?.clientId, "chatgpt");
   assert.equal(await verifyOAuthToken(token, "access", "incorrect"), null);
   await assert.rejects(() => signOAuthToken("access", {}, ""), /must not be empty/);
+});
+
+test("authenticates the owner through HTTP Basic without putting the key in a form or URL", () => {
+  const ownerPassword = "short-owner-password";
+  const valid = "Basic " + btoa("owner:" + ownerPassword);
+  assert.equal(basicOwnerAuthorizationMatches(valid, ownerPassword), true);
+  assert.equal(basicOwnerAuthorizationMatches("Basic " + btoa("other:" + ownerPassword), ownerPassword), false);
+  assert.equal(basicOwnerAuthorizationMatches("Basic " + btoa("owner:wrong"), ownerPassword), false);
+  assert.equal(basicOwnerAuthorizationMatches("Bearer " + ownerPassword, ownerPassword), false);
+  assert.equal(basicOwnerAuthorizationMatches("Basic !!!", ownerPassword), false);
+  assert.equal(basicOwnerAuthorizationMatches(null, ownerPassword), false);
 });

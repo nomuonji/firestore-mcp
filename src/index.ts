@@ -1,7 +1,7 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { extractBearerToken, safeEqual } from "./core.js";
-import { parseOAuthScopes, pkceChallenge, safeOAuthRedirect, sameAccessKey, signOAuthToken, verifyOAuthToken } from "./oauth.js";
+import { basicOwnerAuthorizationMatches, parseOAuthScopes, pkceChallenge, safeOAuthRedirect, signOAuthToken, verifyOAuthToken } from "./oauth.js";
 import {
   createDocument,
   deleteDocument,
@@ -188,74 +188,15 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    };
-    return entities[character]!;
-  });
-}
-
-function authorizationPage(values: {
-  action: string;
-  clientId: string;
-  redirectUri: string;
-  state: string;
-  scope: string;
-  challenge: string;
-  error?: string;
-}): Response {
-  const hidden = [
-    ["client_id", values.clientId],
-    ["redirect_uri", values.redirectUri],
-    ["state", values.state],
-    ["scope", values.scope],
-    ["code_challenge", values.challenge],
-    ["code_challenge_method", "S256"]
-  ].map(([key, value]) =>
-    '<input type="hidden" name="' + key + '" value="' + escapeHtml(value) + '">'
-  ).join("");
-  const error = values.error
-    ? '<p class="error">' + escapeHtml(values.error) + "</p>"
-    : "";
-  const html = [
-    "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">",
-    '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    "<title>Firestore MCP 接続許可</title>",
-    "<style>",
-    "body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:1.25rem;background:#f5f7fa;color:#18212b}",
-    ".card{background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:24px}",
-    "h1{font-size:1.4rem}p,small{line-height:1.6;color:#4e5b68}",
-    "input,button{box-sizing:border-box;width:100%;padding:12px;margin:8px 0;font:inherit;border-radius:8px}",
-    "input{border:1px solid #b8c2cc}button{background:#1769aa;color:white;border:0;font-weight:700;cursor:pointer}",
-    ".deny{background:#e8edf2;color:#23303d}.error{color:#9b2424;background:#fff0f0;padding:10px;border-radius:8px}",
-    "</style></head><body><main class=\"card\">",
-    "<h1>Firestore MCPへのアクセスを許可しますか？</h1>",
-    "<p><strong>" + escapeHtml(values.clientId) + "</strong> が、設定済みのFirestoreデータベース（keywords / tweets）にアクセスします。</p>",
-    "<p>許可される操作はFirestoreの読み取り・作成・更新・削除です。</p>",
-    error,
-    '<form method="post">',
-    hidden,
-    '<label>管理用アクセスキー（Cloudflareの MCP_AUTH_TOKEN）',
-    '<input name="access_key" type="password" autocomplete="current-password" required></label>',
-    "<small>既存の MCP_AUTH_TOKEN を入力してください。ChatGPTへこの値は渡されません。</small>",
-    '<button type="submit" name="decision" value="approve">許可して接続</button>',
-    '<button class="deny" type="submit" name="decision" value="deny" formnovalidate>拒否</button>',
-    "</form></main></body></html>"
-  ].join("");
-  return new Response(html, {
+function ownerAuthenticationRequired(): Response {
+  return new Response("Owner authentication required.", {
+    status: 401,
     headers: {
-      "Content-Type": "text/html; charset=utf-8",
+      "WWW-Authenticate": 'Basic realm="Firestore MCP owner authorization", charset="UTF-8"',
       "Cache-Control": "no-store",
       Pragma: "no-cache",
-      "X-Content-Type-Options": "nosniff",
-      "X-Frame-Options": "DENY",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff"
     }
   });
 }
@@ -294,55 +235,12 @@ async function authorizeGet(request: Request, env: Env): Promise<Response> {
     return new Response("Invalid OAuth authorization request.", { status: 400 });
   }
 
-  return authorizationPage({
-    clientId,
-    redirectUri: redirectUri.toString(),
-    state,
-    scope: scope.join(" "),
-    challenge
-  });
-}
-
-async function authorizePost(request: Request, env: Env): Promise<Response> {
-  if (!env.MCP_AUTH_TOKEN) {
-    return new Response("MCP_AUTH_TOKEN is not configured.", { status: 503 });
-  }
-  const form = await request.formData();
-  const redirectUri = safeOAuthRedirect(String(form.get("redirect_uri") ?? ""));
-  const clientId = String(form.get("client_id") ?? "");
-  const state = String(form.get("state") ?? "");
-  const challenge = String(form.get("code_challenge") ?? "");
-  const method = String(form.get("code_challenge_method") ?? "");
-  const decision = String(form.get("decision") ?? "approve");
-  let scope: string[];
-
-  try {
-    scope = parseOAuthScopes(String(form.get("scope") ?? ""));
-  } catch {
-    return new Response("Unsupported OAuth scope.", { status: 400 });
+  // Use a browser-native HTTP Basic challenge instead of an HTML form. This
+  // avoids form-action CSP restrictions in embedded ChatGPT authorization UI.
+  if (!basicOwnerAuthorizationMatches(request.headers.get("authorization"), env.MCP_AUTH_TOKEN)) {
+    return ownerAuthenticationRequired();
   }
 
-  if (decision === "deny") {
-    if (!redirectUri) return new Response("Invalid redirect URI.", { status: 400 });
-    redirectUri.searchParams.set("error", "access_denied");
-    if (state) redirectUri.searchParams.set("state", state);
-    return Response.redirect(redirectUri.toString(), 302);
-  }
-
-  const accessKey = String(form.get("access_key") ?? "");
-  if (
-    !redirectUri ||
-    !clientId ||
-    !/^[A-Za-z0-9._~:-]+$/.test(clientId) ||
-    !/^[A-Za-z0-9_-]{43,128}$/.test(challenge) ||
-    method !== "S256" ||
-    state.length > 2048 ||
-    !sameAccessKey(accessKey, env.MCP_AUTH_TOKEN)
-  ) {
-    return new Response("Authorization denied. Check the access key and authorization request.", { status: 401 });
-  }
-
-  const resource = resourceOf(request);
   const code = await signOAuthToken("code", {
     redirectUri: redirectUri.toString(),
     clientId,
@@ -518,7 +416,6 @@ export default {
       return authorizationServerMetadata(request);
     }
     if (url.pathname === "/oauth/authorize" && request.method === "GET") return authorizeGet(request, env);
-    if (url.pathname === "/oauth/authorize" && request.method === "POST") return authorizePost(request, env);
     if (url.pathname === "/oauth/token" && request.method === "POST") return tokenPost(request, env);
     if (url.pathname === "/mcp") return handleMcp(request, env);
     return new Response("Not Found", { status: 404 });
