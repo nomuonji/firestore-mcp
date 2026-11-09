@@ -7,7 +7,7 @@ A generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It i
 - Streamable HTTP MCP endpoint: `/mcp`.
 - One dedicated Google service account can access multiple Firestore projects through aliases.
 - OAuth 2.1 authorization code flow with PKCE (S256), using stateless HMAC-signed codes and tokens.
-- The existing `MCP_AUTH_TOKEN` is the shared HMAC signing key, the direct bearer key for trusted agents, and the owner password shown on the OAuth consent page.
+- The existing `MCP_AUTH_TOKEN` is the shared HMAC signing key, the direct bearer key for trusted agents, and the owner password shown on the OAuth consent page. Any non-empty plaintext value is accepted; short non-empty plaintext values work, but are not recommended for an Internet-exposed production service.
 - No KV, D1, Durable Object, database, or other OAuth session store is needed.
 - Dashboard-managed Worker variables are preserved on deployment by `keep_vars: true`.
 
@@ -34,7 +34,7 @@ Set these three runtime variables on the Worker. They may be managed in Cloudfla
 
 | Variable | Purpose |
 | --- | --- |
-| `MCP_AUTH_TOKEN` | Random owner key (at least 32 characters); also signs stateless OAuth tokens. |
+| `MCP_AUTH_TOKEN` | Non-empty owner key; also signs stateless OAuth tokens. A short/simple value works but is substantially weaker. |
 | `FIRESTORE_SERVICE_ACCOUNT_JSON` | Complete Google service-account JSON key. |
 | `FIRESTORE_DATABASES` | JSON alias map for the target Firestore projects. |
 
