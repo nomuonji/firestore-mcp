@@ -116,7 +116,7 @@ export function basicOwnerAuthorizationMatches(
   expected: string | undefined
 ): boolean {
   if (!header || !expected) return false;
-  const match = /^Basic\\s+([A-Za-z0-9+/]+={0,2})$/i.exec(header.trim());
+  const match = /^Basic\s+([A-Za-z0-9+/]+={0,2})$/i.exec(header.trim());
   if (!match) return false;
 
   try {
