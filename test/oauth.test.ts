@@ -47,3 +47,16 @@ test("accepts only supported Firestore OAuth scopes", () => {
   assert.throws(() => parseOAuthScopes("admin"));
   assert.throws(() => parseOAuthScopes("offline_access"));
 });
+
+test("supports a non-empty plain-text owner key such as the configured dashboard variable", async () => {
+  const ownerKey = "short-owner-password";
+  const token = await signOAuthToken("access", {
+    clientId: "chatgpt",
+    scope: "firestore:access",
+    aud: "https://example.com/mcp"
+  }, ownerKey);
+  const verified = await verifyOAuthToken(token, "access", ownerKey);
+  assert.equal(verified?.clientId, "chatgpt");
+  assert.equal(await verifyOAuthToken(token, "access", "incorrect"), null);
+  await assert.rejects(() => signOAuthToken("access", {}, ""), /must not be empty/);
+});
