@@ -2,6 +2,7 @@ export type FirestoreValue = Record<string, unknown>;
 
 const SIMPLE_FIELD = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SAFE_SEGMENT = /^[^/]{1,1500}$/;
+const RESERVED_FIELD = /^__.*__$/;
 
 export function assertCollectionPath(path: string): string[] {
   const segments = splitPath(path);
@@ -21,8 +22,7 @@ export function assertDocumentPath(path: string): string[] {
 
 export function assertParentDocumentPath(path?: string): string[] {
   if (!path) return [];
-  const segments = assertDocumentPath(path);
-  return segments;
+  return assertDocumentPath(path);
 }
 
 function splitPath(path: string): string[] {
@@ -30,17 +30,29 @@ function splitPath(path: string): string[] {
     throw new Error("Firestore path must be a non-empty string of at most 6000 characters.");
   }
   const segments = path.split("/");
-  if (segments.some((part) => !SAFE_SEGMENT.test(part) || part === "." || part === ".." || part.startsWith("__") && part.endsWith("__"))) {
+  if (segments.some((part) => !SAFE_SEGMENT.test(part) || part === "." || part === ".." || RESERVED_FIELD.test(part))) {
     throw new Error("Firestore path contains an invalid or reserved segment.");
   }
   return segments;
 }
 
 export function assertFieldPath(path: string): string {
-  if (typeof path !== "string" || path.length > 1500 || !path.split(".").every((part) => SIMPLE_FIELD.test(part))) {
-    throw new Error("Field paths must use simple dot-separated field names.");
+  if (typeof path !== "string" || path.length > 1500 || !path.split(".").every((part) => SIMPLE_FIELD.test(part) && !RESERVED_FIELD.test(part))) {
+    throw new Error("Query field paths must use simple dot-separated field names.");
   }
   return path;
+}
+
+function assertFieldName(name: string): void {
+  if (typeof name !== "string" || name.length === 0 || new TextEncoder().encode(name).length > 1500 || RESERVED_FIELD.test(name)) {
+    throw new Error("Document field names must be non-empty, at most 1500 UTF-8 bytes, and not reserved.");
+  }
+}
+
+export function encodeUpdateFieldPath(name: string): string {
+  assertFieldName(name);
+  if (SIMPLE_FIELD.test(name)) return name;
+  return `\u0060${name.replace(/\\/g, "\\\\").replace(/\u0060/g, "\\u0060")}\u0060`;
 }
 
 export function assertDocumentData(data: unknown): Record<string, unknown> {
@@ -50,11 +62,7 @@ export function assertDocumentData(data: unknown): Record<string, unknown> {
   const record = data as Record<string, unknown>;
   const keys = Object.keys(record);
   if (keys.length > 200) throw new Error("A document write may contain at most 200 top-level fields.");
-  for (const key of keys) {
-    if (!SIMPLE_FIELD.test(key) || key.startsWith("__")) {
-      throw new Error("Document field names must be simple identifiers and cannot be reserved.");
-    }
-  }
+  for (const key of keys) assertFieldName(key);
   return record;
 }
 
@@ -81,9 +89,7 @@ export function encodeValue(value: unknown): Record<string, unknown> {
     }
     const fields: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(object)) {
-      if (!SIMPLE_FIELD.test(key) || key.startsWith("__")) {
-        throw new Error("Nested field names must be simple identifiers and cannot be reserved.");
-      }
+      assertFieldName(key);
       fields[key] = encodeValue(child);
     }
     return { mapValue: { fields } };
@@ -141,9 +147,15 @@ export function safeEqual(left: string, right: string): boolean {
 
 export function publicDocument(document: Record<string, unknown>): Record<string, unknown> {
   const name = typeof document.name === "string" ? document.name : "";
-  const id = name.split("/").pop() ?? "";
+  const rawId = name.split("/").pop() ?? "";
+  let id = rawId;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    // Keep the raw ID if the resource name does not contain valid URI escapes.
+  }
   return {
-    id: decodeURIComponent(id),
+    id,
     data: decodeFields((document.fields ?? {}) as Record<string, Record<string, unknown>>),
     ...(document.createTime ? { createTime: document.createTime } : {}),
     ...(document.updateTime ? { updateTime: document.updateTime } : {})

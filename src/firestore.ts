@@ -6,6 +6,7 @@ import {
   assertParentDocumentPath,
   decodeFields,
   encodeFields,
+  encodeUpdateFieldPath,
   encodeValue,
   publicDocument
 } from "./core.js";
@@ -48,7 +49,7 @@ function parseServiceAccount(env: FirestoreEnv): ServiceAccount {
   if (typeof account.client_email !== "string" || !account.client_email.includes("@") || typeof account.private_key !== "string" || !account.private_key.includes("PRIVATE KEY")) {
     throw new Error("Firestore credentials are missing required service-account fields.");
   }
-  return account as ServiceAccount;
+  if (account.token_uri && account.token_uri !== "https://oauth2.googleapis.com/token") {\n    throw new Error("Service-account token_uri must be the standard Google OAuth endpoint.");\n  }\n  return account as ServiceAccount;
 }
 
 export function resolveDatabase(env: FirestoreEnv, alias: string): DatabaseTarget {
@@ -322,13 +323,13 @@ export async function updateDocument(
   const fields = assertDocumentData(data);
   if (Object.keys(fields).length === 0) throw new Error("data must contain at least one field.");
   const params = new URLSearchParams();
-  for (const key of Object.keys(fields)) params.append("updateMask.fieldPaths", assertFieldPath(key));
+  for (const key of Object.keys(fields)) params.append("updateMask.fieldPaths", encodeUpdateFieldPath(key));
   params.set("currentDocument.exists", "true");
   if (expectedUpdateTime) params.set("currentDocument.updateTime", expectedUpdateTime);
   const updated = await firestoreRequest<Record<string, unknown>>(
     env,
     target,
-    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`.replace("? ", "?"),
+    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`,
     { method: "PATCH", body: JSON.stringify({ fields: encodeFields(fields) }) }
   );
   return publicDocument(updated);
@@ -346,7 +347,7 @@ export async function deleteDocument(
   await firestoreRequest<null>(
     env,
     target,
-    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`.replace("? ", "?"),
+    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`,
     { method: "DELETE" }
   );
   return { deleted: true };
