@@ -7,7 +7,7 @@ A generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It i
 - Streamable HTTP MCP endpoint: `/mcp`.
 - One dedicated Google service account can access multiple Firestore projects through aliases.
 - OAuth 2.1 authorization code flow with PKCE (S256), using stateless HMAC-signed codes and tokens.
-- The existing `MCP_AUTH_TOKEN` is the shared HMAC signing key, the direct bearer key for trusted agents, and the owner password shown on the OAuth consent page. Any non-empty plaintext value is accepted; short non-empty plaintext values work, but are not recommended for an Internet-exposed production service.
+- The existing `MCP_AUTH_TOKEN` is the shared HMAC signing key, the direct bearer key for trusted agents, and the owner password requested by a browser-native HTTP Basic authentication challenge. Any non-empty plaintext value is accepted; short non-empty plaintext values work, but are not recommended for an Internet-exposed production service.
 - No KV, D1, Durable Object, database, or other OAuth session store is needed.
 - Dashboard-managed Worker variables are preserved on deployment by `keep_vars: true`.
 
@@ -92,7 +92,7 @@ In **Plugins → Add custom MCP server**:
 
 Auth URL, Token URL, issuer, and Resource should be discovered from the metadata after the Worker is redeployed. Do not select DCR or CIMD for this server; those registration modes are not implemented.
 
-When ChatGPT opens the authorization page, enter the existing Cloudflare `MCP_AUTH_TOKEN` value. This is an owner confirmation step; it is never given to ChatGPT as its OAuth client secret. After approval, ChatGPT receives a short-lived signed OAuth access token and refresh token.
+When ChatGPT opens the authorization URL, the browser receives an HTTP Basic authentication challenge. Enter username `owner` and the existing Cloudflare `MCP_AUTH_TOKEN` as the password. The credential is sent in the HTTPS `Authorization` header, not in a form body or URL query string; it is not used as ChatGPT's OAuth client secret. After authentication, the Worker redirects directly to the ChatGPT callback with a short-lived authorization code. ChatGPT then exchanges it for signed OAuth access and refresh tokens. No HTML form is rendered, so the flow does not depend on `form-action` CSP.
 
 ## Runtime checks
 
