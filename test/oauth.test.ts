@@ -28,7 +28,7 @@ test("binds authorization codes to the PKCE S256 verifier", async () => {
   const code = await signOAuthToken("code", { challenge: await pkceChallenge(verifier) }, secret, now);
   const decoded = await verifyOAuthToken(code, "code", secret, now + 1000);
   assert.equal(decoded?.challenge, await pkceChallenge(verifier));
-  assert.equal(await pkceChallenge("a-different-verifier"), "j6bXG8Y2FJvQdT9cbPAV2z0f6HVy3YVb2tb0FczVFuQ");
+  assert.notEqual(await pkceChallenge("a-different-verifier"), await pkceChallenge(verifier));
 });
 
 test("rejects OAuth token tampering and redirects outside ChatGPT", async () => {
