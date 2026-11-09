@@ -1,0 +1,7 @@
+# Use a dedicated service account. Never commit real values.
+MCP_AUTH_TOKEN=replace-with-a-long-random-token
+FIRESTORE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"service-account-home-project","private_key_id":"replace","private_key":"-----BEGIN PRIVATE KEY-----\nREPLACE\n-----END PRIVATE KEY-----\n","client_email":"firestore-mcp@service-account-home-project.iam.gserviceaccount.com","client_id":"replace","token_uri":"https://oauth2.googleapis.com/token"}
+
+# Each alias maps to an existing Firestore project. The same service account
+# must have roles/datastore.user in each target project.
+FIRESTORE_DATABASES={"tweets":{"projectId":"YOUR_TWEETS_FIREBASE_PROJECT_ID","databaseId":"(default)"},"keywords":{"projectId":"YOUR_KEYWORDS_FIREBASE_PROJECT_ID","databaseId":"(default)"}}
