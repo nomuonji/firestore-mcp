@@ -1,7 +1,7 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { safeEqual } from "./core.js";
-import OAuthProvider, { AuthorizationError, type AuthRequest, type ConsentDescription, type OAuthHelpers, type OAuthResourceAuth } from "@cloudflare/workers-oauth-provider";
+import OAuthProvider, { AuthorizationError, type ConsentDescription, type OAuthHelpers, type OAuthResourceAuth } from "@cloudflare/workers-oauth-provider";
 import {
   createDocument,
   deleteDocument,
@@ -19,11 +19,6 @@ interface Env extends FirestoreEnv {
   OAUTH_KV?: KVNamespace;
   OAUTH_PROVIDER?: OAuthHelpers;
 }
-
-type ExecutionContextLike = {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException(): void;
-};
 
 function result(data: unknown) {
   return {
