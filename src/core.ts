@@ -52,9 +52,9 @@ function assertFieldName(name: string): void {
 export function encodeUpdateFieldPath(name: string): string {
   assertFieldName(name);
   if (SIMPLE_FIELD.test(name)) return name;
-  return `\u0060${name.replace(/\\/g, "\\\\").replace(/\u0060/g, "\\u0060")}\u0060`;
+  const escaped = name.replace(/\\/g, "\\\\").replace(/\u0060/g, (character) => "\\" + character);
+  return String.fromCharCode(96) + escaped + String.fromCharCode(96);
 }
-
 export function assertDocumentData(data: unknown): Record<string, unknown> {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new Error("data must be a JSON object.");

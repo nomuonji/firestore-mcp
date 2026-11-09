@@ -347,7 +347,7 @@ export async function deleteDocument(
   await firestoreRequest<null>(
     env,
     target,
-    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`,
+    `/${parts.map(encodeURIComponent).join("/")}?${params.toString()}`,
     { method: "DELETE" }
   );
   return { deleted: true };
