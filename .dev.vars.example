@@ -1,10 +1,8 @@
-# Existing long random value now verifies the owner on the OAuth consent page.
-# Keep this at 32+ characters. It is never sent to ChatGPT as the MCP access token.
-MCP_AUTH_TOKEN=replace-with-a-long-random-owner-password
+# Any non-empty plain-text value is accepted. Use a long random value for production security.
+# This value is never sent to ChatGPT as its OAuth client secret.
+MCP_AUTH_TOKEN=replace-with-your-owner-password
 FIRESTORE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"service-account-home-project","private_key_id":"replace","private_key":"-----BEGIN PRIVATE KEY-----\\nREPLACE\\n-----END PRIVATE KEY-----\\n","client_email":"firestore-mcp@service-account-home-project.iam.gserviceaccount.com","client_id":"replace","token_uri":"https://oauth2.googleapis.com/token"}
 
 # One alias per existing Firestore project.
 FIRESTORE_DATABASES={"keywords":{"projectId":"precise-armor-390514","databaseId":"(default)"},"tweets":{"projectId":"selection-to-spreadsheet","databaseId":"(default)"}}
 
-# Cloudflare KV namespace binding OAUTH_KV is required to activate OAuth.
-# Create it with: npx wrangler kv namespace create FIRESTORE_MCP_OAUTH
