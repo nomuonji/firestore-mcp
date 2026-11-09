@@ -1,16 +1,16 @@
 # Firestore MCP
 
-A small, generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It is deliberately independent of Tweet Operator, Keyword Operator, Vercel, and their application APIs.
+A generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It is independent of Tweet Operator, Keyword Operator, Vercel, and their application APIs.
 
-## What it does
+## Features
 
-- Exposes one Streamable HTTP MCP endpoint: `/mcp`.
-- Connects to multiple existing Firestore projects through configured aliases such as `tweets` and `keywords`.
-- Uses one Google service account, granted access in each target project.
-- Keeps the service-account key and MCP bearer token in Cloudflare Worker Secrets. The agent only receives the MCP bearer token and database aliases.
-- Uses the Firestore REST API directly; no Firebase Admin SDK, Vercel runtime, or billed intermediary service is required.
+- Streamable HTTP MCP endpoint: `/mcp`.
+- One service account can access multiple Firestore projects via aliases.
+- OAuth 2.1 authorization code flow with PKCE (S256), CIMD client identification, resource-bound access tokens, refresh-token rotation, and consent.
+- Cloudflare's maintained `@cloudflare/workers-oauth-provider` handles OAuth discovery, token issuance/validation, and token storage.
+- The service-account key remains inside the Worker and is never sent to ChatGPT.
 
-### MCP tools
+## MCP tools
 
 | Tool | Purpose |
 | --- | --- |
@@ -23,100 +23,99 @@ A small, generic, multi-project Firestore MCP server hosted on Cloudflare Worker
 | `update_document` | Patch top-level fields while preserving unrelated fields. |
 | `delete_document` | Delete only with `confirm: true` and the exact document `updateTime`. |
 
-Normal JSON strings, numbers, booleans, nulls, arrays, and maps are supported. For Firestore-specific typed values, use `{"$timestamp":"2026-11-09T00:00:00Z"}` or `{"$reference":"projects/.../documents/..."}`. Returned timestamps and references use the same wrappers.
+## Google Cloud setup
 
-## Security model
+Create one dedicated service account in an existing project. Grant it `roles/datastore.user` in every target Firestore project. The service-account key is used only by the Worker.
 
-- `MCP_AUTH_TOKEN`: a random bearer token used by MCP clients. Use at least 32 random bytes.
-- `FIRESTORE_SERVICE_ACCOUNT_JSON`: one dedicated Google service-account JSON key.
-- `FIRESTORE_DATABASES`: an allowlist mapping short aliases to Firestore project/database IDs.
-- The Worker never exposes the service-account JSON, private key, OAuth access token, full project resource names, or raw upstream error bodies.
-- The service account must be granted `roles/datastore.user` separately in each target Firebase/Google Cloud project. It does not need Owner or Editor.
-- Use a dedicated service account rather than a personal user credential. Do not reuse a broad production administrator account.
-- Firestore server credentials are authorized by IAM and bypass Firebase Security Rules. Treat this Worker as a privileged database gateway. Protect the MCP endpoint and only register trusted agents.
-- The Worker is intentionally generic. It does not enforce application-specific field schemas or business rules.
+## Cloudflare Worker setup
 
-## Deploy
+### 1. Create an OAuth KV namespace
 
-### 1. Create or select a service account
-
-Create one dedicated service account in an existing Google Cloud project. No new project or billing account is required for the Worker itself. Firestore API must already be enabled in each target project.
-
-Grant this service account `roles/datastore.user` in each target project (for example, the existing Tweets and Keywords Firebase projects). The service account's home project does not have to be either target project.
-
-### 2. Install dependencies and log in to Cloudflare
-
-Requires Node.js 22+ and an existing Cloudflare account with Workers Free enabled.
+OAuth authorization codes, grants, and tokens need server-side storage. Create one free Workers KV namespace:
 
 ```bash
-npm install
 npx wrangler login
+npx wrangler kv namespace create FIRESTORE_MCP_OAUTH
 ```
 
-### 3. Register Worker Secrets
+The command returns a namespace ID. Add it to `wrangler.jsonc` as the `OAUTH_KV` binding:
 
-Run these commands from the repository root. Each command reads the value interactively; do not put real secrets in source files or command-line history.
-
-```bash
-npx wrangler secret put MCP_AUTH_TOKEN
-npx wrangler secret put FIRESTORE_SERVICE_ACCOUNT_JSON
-npx wrangler secret put FIRESTORE_DATABASES
+```jsonc
+"kv_namespaces": [
+  { "binding": "OAUTH_KV", "id": "PASTE_THE_RETURNED_NAMESPACE_ID" }
+]
 ```
 
-For `FIRESTORE_SERVICE_ACCOUNT_JSON`, paste the complete JSON key file.
+The namespace ID is configuration, not a credential. Keep it in the repository config. The OAuth provider stores authorization data in this namespace; do not use a namespace shared with another application.
 
-For `FIRESTORE_DATABASES`, paste a JSON object using the real existing Firebase project IDs:
+The Worker continues to serve the old Bearer-token mode until this binding is present. After adding the binding and deploying, OAuth becomes active.
+
+### 2. Configure Worker variables
+
+Keep these names exactly as shown:
+
+- `MCP_AUTH_TOKEN`: long random owner password (at least 32 characters). The browser asks for it on the OAuth consent page. It is not the MCP access token and is not entered into ChatGPT's OAuth client fields.
+- `FIRESTORE_SERVICE_ACCOUNT_JSON`: complete Google service-account JSON key.
+- `FIRESTORE_DATABASES`: target aliases.
+
+Example `FIRESTORE_DATABASES`:
 
 ```json
 {
-  "tweets": { "projectId": "YOUR_TWEETS_PROJECT_ID", "databaseId": "(default)" },
-  "keywords": { "projectId": "YOUR_KEYWORDS_PROJECT_ID", "databaseId": "(default)" }
+  "keywords": { "projectId": "precise-armor-390514", "databaseId": "(default)" },
+  "tweets": { "projectId": "selection-to-spreadsheet", "databaseId": "(default)" }
 }
 ```
 
-Project IDs are configuration, not credentials. They are stored as a Worker Secret here to keep the routing table private and easy to set independently from source control. The MCP only returns the aliases.
+Use Cloudflare Worker variables or secrets. The service-account JSON and owner password should preferably be Secrets; the Worker code reads either binding identically. Never put their values in GitHub.
 
-Generate a strong MCP token locally, for example:
-
-```bash
-openssl rand -hex 32
-```
-
-Do not send the token or service-account JSON in chat, issues, or pull requests.
-
-### 4. Deploy
+### 3. Deploy and verify
 
 ```bash
+npm install
 npm run check
 npx wrangler deploy
 ```
 
-The endpoint is:
+Check:
 
-```text
-https://firestore-mcp.<your-workers-subdomain>.workers.dev/mcp
-```
+- `GET /health` returns a static service status.
+- `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-authorization-server` return OAuth discovery metadata.
+- An unauthenticated MCP call to `/mcp` returns 401 with a `resource_metadata` challenge.
+- After ChatGPT authorization, MCP calls include a valid resource-bound OAuth bearer token.
 
-Health check:
+### 4. Connect ChatGPT
 
-```text
-https://firestore-mcp.<your-workers-subdomain>.workers.dev/health
-```
+Create a custom MCP connector using:
 
-`/health` returns only a static service status. All MCP requests require `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+- Connection URL: `https://firestore-mcp.youfree731.workers.dev/mcp`
+- Authentication: `OAuth`
+- Client registration: choose **Client Identifier Metadata Document (CIMD)** when offered. Do not choose User-Defined OAuth Client; there is no client secret to enter.
+- Allow the connector to discover the authorization and token URLs from the server metadata.
 
-### 5. Optional GitHub Actions deployment
+When ChatGPT opens the authorization page, enter the `MCP_AUTH_TOKEN` owner password stored in Worker settings, then explicitly approve Firestore access.
 
-The repository includes a manual deploy workflow. Add these GitHub Actions repository secrets:
+## OAuth behavior
 
-- `CLOUDFLARE_API_TOKEN` with permission to deploy Workers.
-- `CLOUDFLARE_ACCOUNT_ID`.
+- OAuth issuer: `https://firestore-mcp.youfree731.workers.dev`
+- Resource: `https://firestore-mcp.youfree731.workers.dev/mcp`
+- Authorization endpoint: `/authorize`
+- Token endpoint: `/oauth/token`
+- Supported scopes: `firestore:access`, `offline_access`
+- CIMD is enabled; DCR is intentionally not exposed.
+- Only the configured ChatGPT resource receives tokens. The authorization page displays the client/domain and redirect hostname before approval.
 
-Then run **Actions → Deploy Cloudflare Worker → Run workflow**. The Google service-account key and MCP token remain in Cloudflare; they are never copied to GitHub Actions.
+## Security notes
+
+- Firestore server credentials bypass Firebase Security Rules. IAM is enforced through `roles/datastore.user`.
+- `MCP_AUTH_TOKEN` is the owner sign-in password after OAuth is enabled; rotate it if exposed.
+- OAuth tokens, grants, and authorization codes are managed by Cloudflare's OAuth provider and stored in Workers KV.
+- `delete_document` still requires explicit `confirm: true` and the exact `updateTime`.
+- The Worker does not return Google credentials, project resource names, or raw upstream error bodies.
 
 ## Local development
 
-Copy `.dev.vars.example` to `.dev.vars`, replace every placeholder with local test credentials, then:
+Copy `.dev.vars.example` to `.dev.vars`, create a development KV namespace and bind it in `wrangler.jsonc`, then:
 
 ```bash
 npm install
@@ -124,13 +123,3 @@ npm run dev
 ```
 
 Never commit `.dev.vars`.
-
-## Notes and limits
-
-- This is a direct database access layer, not a replacement for either Operator's API.
-- Nested collection paths use alternating collection/document segments, e.g. `accounts/account-1/posts`.
-- Queries are limited to one collection path, up to 10 AND-combined field filters, and 100 returned documents. Firestore may require indexes for some compound filters.
-- List operations expose Firestore pagination tokens. Query pagination is not yet exposed.
-- Updates patch supplied top-level fields; maps supplied as a value replace that top-level map field.
-- Delete requires the document's current `updateTime` to prevent deleting a changed document after it was read.
-- Worker secrets are separate from GitHub repository secrets.
