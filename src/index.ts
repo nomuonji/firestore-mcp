@@ -1,6 +1,6 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { safeEqual } from "./core.js";
+import { extractBearerToken, safeEqual } from "./core.js";
 import OAuthProvider, { AuthorizationError, type ConsentDescription, type OAuthHelpers, type OAuthResourceAuth } from "@cloudflare/workers-oauth-provider";
 import {
   createDocument,
@@ -179,8 +179,8 @@ const MCP_RESOURCE = `${OAUTH_ISSUER}/mcp`;
 function legacyAuthorized(request: Request, env: Env): boolean {
   if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) return false;
   const header = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\\s+(.+)$/i.exec(header);
-  return Boolean(match && safeEqual(match[1]!, env.MCP_AUTH_TOKEN));
+  const token = extractBearerToken(header);
+  return Boolean(token && safeEqual(token, env.MCP_AUTH_TOKEN));
 }
 
 function mcpHandler(request: Request, env: Env): Promise<Response> {
