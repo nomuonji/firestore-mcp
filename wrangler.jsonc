@@ -6,5 +6,8 @@
   "workers_dev": true,
   "observability": {
     "enabled": true
-  }
+  },
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ]
 }
