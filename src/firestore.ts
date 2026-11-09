@@ -329,7 +329,7 @@ export async function updateDocument(
   const updated = await firestoreRequest<Record<string, unknown>>(
     env,
     target,
-    `/${parts.map(encodeURIComponent).join("/")}? ${params.toString()}`,
+    `/${parts.map(encodeURIComponent).join("/")}?${params.toString()}`,
     { method: "PATCH", body: JSON.stringify({ fields: encodeFields(fields) }) }
   );
   return publicDocument(updated);

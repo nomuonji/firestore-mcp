@@ -28,7 +28,7 @@ test("round trips supported Firestore JSON field values", () => {
     nested: { answer: 42 },
     createdAt: { $timestamp: "2026-11-09T00:00:00Z" }
   };
-  assert.deepEqual(decodeFields(encodeFields(source) as Record<string, Record<string, unknown>>), source);
+  const specialField = { "field with spaces": "preserved", "field.with.dots": 7 };\n  assert.deepEqual(decodeFields(encodeFields(source) as Record<string, Record<string, unknown>>), source);\n  assert.deepEqual(decodeFields(encodeFields(specialField) as Record<string, Record<string, unknown>>), specialField);
 });
 
 test("uses a length-aware constant-time token comparison", () => {

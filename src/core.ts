@@ -30,7 +30,7 @@ function splitPath(path: string): string[] {
     throw new Error("Firestore path must be a non-empty string of at most 6000 characters.");
   }
   const segments = path.split("/");
-  if (segments.some((part) => !SAFE_SEGMENT.test(part) || part === "." || part === ".." || RESERVED_FIELD.test(part))) {
+  if (segments.some((part) => !SAFE_SEGMENT.test(part) || part === "." || part === "..")) {
     throw new Error("Firestore path contains an invalid or reserved segment.");
   }
   return segments;
