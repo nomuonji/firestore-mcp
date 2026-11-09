@@ -5,6 +5,7 @@ import {
   assertDocumentPath,
   decodeFields,
   encodeFields,
+  extractBearerToken,
   safeEqual
 } from "../src/core.js";
 
@@ -37,4 +38,12 @@ test("uses a length-aware constant-time token comparison", () => {
   assert.equal(safeEqual("same-token", "same-token"), true);
   assert.equal(safeEqual("same-token", "same-tokeN"), false);
   assert.equal(safeEqual("short", "longer"), false);
+});
+
+test("extracts RFC-style bearer credentials without accepting other schemes", () => {
+  assert.equal(extractBearerToken("Bearer abc123"), "abc123");
+  assert.equal(extractBearerToken("bearer\\tcase-insensitive"), "case-insensitive");
+  assert.equal(extractBearerToken("Basic abc123"), null);
+  assert.equal(extractBearerToken("Bearer"), null);
+  assert.equal(extractBearerToken(null), null);
 });
