@@ -277,7 +277,7 @@ async function authorizeGet(request: Request, env: Env): Promise<Response> {
     return new Response("Unsupported OAuth scope.", { status: 400 });
   }
 
-  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+  if (!env.MCP_AUTH_TOKEN) {
     return new Response("MCP_AUTH_TOKEN is not configured.", { status: 503 });
   }
   if (
@@ -305,7 +305,7 @@ async function authorizeGet(request: Request, env: Env): Promise<Response> {
 }
 
 async function authorizePost(request: Request, env: Env): Promise<Response> {
-  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+  if (!env.MCP_AUTH_TOKEN) {
     return new Response("MCP_AUTH_TOKEN is not configured.", { status: 503 });
   }
   const form = await request.formData();
@@ -358,7 +358,7 @@ async function authorizePost(request: Request, env: Env): Promise<Response> {
 }
 
 async function tokenPost(request: Request, env: Env): Promise<Response> {
-  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+  if (!env.MCP_AUTH_TOKEN) {
     return jsonResponse({ error: "server_error", error_description: "MCP_AUTH_TOKEN is not configured." }, 503);
   }
   const form = await request.formData();
@@ -477,7 +477,7 @@ function protectedResourceMetadata(request: Request): Response {
 }
 
 async function authorized(request: Request, env: Env): Promise<boolean> {
-  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) return false;
+  if (!env.MCP_AUTH_TOKEN) return false;
   const token = extractBearerToken(request.headers.get("authorization"));
   if (!token) return false;
 
