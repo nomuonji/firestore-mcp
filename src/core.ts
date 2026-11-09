@@ -161,3 +161,9 @@ export function publicDocument(document: Record<string, unknown>): Record<string
     ...(document.updateTime ? { updateTime: document.updateTime } : {})
   };
 }
+
+export function extractBearerToken(header: string | null): string | null {
+  if (!header) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1] ?? null;
+}
