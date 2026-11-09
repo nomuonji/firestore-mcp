@@ -255,7 +255,7 @@ function authorizationPage(values: {
       Pragma: "no-cache",
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://firestore-mcp.youfree731.workers.dev; base-uri 'none'; frame-ancestors 'none'"
     }
   });
 }
