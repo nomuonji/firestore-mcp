@@ -48,7 +48,7 @@ export async function signOAuthToken(
   secret: string,
   nowMs = Date.now()
 ): Promise<string> {
-  if (secret.length < 32) throw new Error("MCP_AUTH_TOKEN must contain at least 32 characters.");
+  if (!secret) throw new Error("MCP_AUTH_TOKEN must not be empty.");
   const now = Math.floor(nowMs / 1000);
   const body = base64Url(encoder.encode(JSON.stringify({
     ...claims,
@@ -68,7 +68,7 @@ export async function verifyOAuthToken(
   secret: string,
   nowMs = Date.now()
 ): Promise<OAuthClaims | null> {
-  if (secret.length < 32) return null;
+  if (!secret) return null;
   const parts = value.split(".");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
 
@@ -103,7 +103,7 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 }
 
 export function sameAccessKey(value: string, expected: string | undefined): boolean {
-  return Boolean(expected && expected.length >= 32 && safeEqual(value, expected));
+  return Boolean(expected && safeEqual(value, expected));
 }
 
 /** Restrict OAuth redirects to ChatGPT's callback domain (plus loopback for local testing). */
