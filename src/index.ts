@@ -1,7 +1,7 @@
 import { McpServer, createMcpHandler } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { extractBearerToken, safeEqual } from "./core.js";
-import OAuthProvider, { AuthorizationError, type ConsentDescription, type OAuthHelpers, type OAuthResourceAuth } from "@cloudflare/workers-oauth-provider";
+import { parseOAuthScopes, pkceChallenge, safeOAuthRedirect, sameAccessKey, signOAuthToken, verifyOAuthToken } from "./oauth.js";
 import {
   createDocument,
   deleteDocument,
@@ -16,8 +16,6 @@ import {
 
 interface Env extends FirestoreEnv {
   MCP_AUTH_TOKEN?: string;
-  OAUTH_KV?: KVNamespace;
-  OAUTH_PROVIDER?: OAuthHelpers;
 }
 
 function result(data: unknown) {
@@ -172,35 +170,22 @@ function createServer(env: Env) {
   return server;
 }
 
+
 const FIRESTORE_SCOPE = "firestore:access";
-const OAUTH_ISSUER = "https://firestore-mcp.youfree731.workers.dev";
-const MCP_RESOURCE = `${OAUTH_ISSUER}/mcp`;
 
-function legacyAuthorized(request: Request, env: Env): boolean {
-  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) return false;
-  const header = request.headers.get("authorization") ?? "";
-  const token = extractBearerToken(header);
-  return Boolean(token && safeEqual(token, env.MCP_AUTH_TOKEN));
+function originOf(request: Request): string {
+  return new URL(request.url).origin;
 }
 
-function mcpHandler(request: Request, env: Env): Promise<Response> {
-  const handler = createMcpHandler(() => createServer(env), { legacy: "stateless" });
-  return handler.fetch(request);
+function resourceOf(request: Request): string {
+  return originOf(request) + "/mcp";
 }
 
-function legacyFetch(request: Request, env: Env): Promise<Response> | Response {
-  const url = new URL(request.url);
-  if (url.pathname === "/health" && request.method === "GET") {
-    return Response.json({ ok: true, service: "firestore-mcp", auth: "legacy-bearer", oauth: "not-configured" });
-  }
-  if (url.pathname !== "/mcp") return new Response("Not Found", { status: 404 });
-  if (!legacyAuthorized(request, env)) {
-    return Response.json(
-      { error: "Unauthorized" },
-      { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="firestore-mcp"' } }
-    );
-  }
-  return mcpHandler(request, env);
+function jsonResponse(value: unknown, status = 200): Response {
+  return Response.json(value, {
+    status,
+    headers: { "Cache-Control": "no-store", Pragma: "no-cache" }
+  });
 }
 
 function escapeHtml(value: string): string {
@@ -216,190 +201,327 @@ function escapeHtml(value: string): string {
   });
 }
 
-function scopeLabel(scope: string): string {
-  if (scope === FIRESTORE_SCOPE) return "Firestoreの読み取り・書き込み（tweets / keywords）";
-  if (scope === "offline_access") return "再接続を減らすための更新トークン";
-  return scope;
-}
-
-function authorizationPage(
-  details: ConsentDescription,
-  handle: string,
-  actionUrl: string,
-  errorMessage?: string
-): string {
-  const clientName = escapeHtml(details.clientName);
-  const redirectHost = escapeHtml(details.redirectHost);
-  const clientDomain = details.clientDomain
-    ? `<p class="domain">クライアントのドメイン: <strong>${escapeHtml(details.clientDomain)}</strong></p>`
-    : '<p class="domain">このクライアント名はOAuthメタデータで申告されたものです。</p>';
-  const scopes = details.scope
-    .map((scope) => `<label class="scope"><input type="checkbox" name="scope" value="${escapeHtml(scope)}" checked> <span>${escapeHtml(scopeLabel(scope))}</span></label>`)
-    .join("");
-  const loopbackWarning = details.redirectIsLoopback
-    ? '<p class="warning">この接続はローカル端末へ認証情報を返します。開始したアプリを確認してください。</p>'
+function authorizationPage(values: {
+  action: string;
+  clientId: string;
+  redirectUri: string;
+  state: string;
+  scope: string;
+  challenge: string;
+  error?: string;
+}): Response {
+  const hidden = [
+    ["client_id", values.clientId],
+    ["redirect_uri", values.redirectUri],
+    ["state", values.state],
+    ["scope", values.scope],
+    ["code_challenge", values.challenge],
+    ["code_challenge_method", "S256"]
+  ].map(([key, value]) =>
+    '<input type="hidden" name="' + key + '" value="' + escapeHtml(value) + '">'
+  ).join("");
+  const error = values.error
+    ? '<p class="error">' + escapeHtml(values.error) + "</p>"
     : "";
-  const error = errorMessage ? `<p class="error">${escapeHtml(errorMessage)}</p>` : "";
-  return `<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Firestore MCPへのアクセス許可</title>
-<style>
-:root{color-scheme:light dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f6f8;color:#18212b}
-main{box-sizing:border-box;width:min(92vw,520px);padding:28px;border-radius:16px;background:#fff;box-shadow:0 8px 32px #18212b18}
-h1{font-size:1.45rem;margin:0 0 12px}
-p{line-height:1.55;color:#44515f}
-.domain{font-size:.92rem}
-.scope{display:flex;gap:10px;align-items:flex-start;margin:14px 0;padding:12px;border:1px solid #d9e0e7;border-radius:9px}
-input[type=password]{box-sizing:border-box;width:100%;padding:12px;border:1px solid #aeb9c5;border-radius:8px;margin:8px 0 16px;font:inherit}
-button{padding:11px 16px;border:0;border-radius:8px;font:inherit;cursor:pointer}
-.allow{background:#1769aa;color:white}
-.deny{background:#e9edf1;color:#293644;margin-left:8px}
-.error,.warning{padding:10px;border-radius:8px;background:#fff0f0;color:#9c2222}
-small{color:#596675}
-@media(prefers-color-scheme:dark){body{background:#101820;color:#e9eef3}main{background:#1b2834}p,small{color:#b7c3ce}.scope{border-color:#435361}input[type=password]{background:#101820;color:#fff;border-color:#52616f}.deny{background:#394957;color:#fff}}
-</style>
-</head>
-<body>
-<main>
-<h1>Firestore MCPへのアクセスを許可しますか？</h1>
-<p><strong>${clientName}</strong> がFirestoreデータベースにアクセスしようとしています。</p>
-${clientDomain}
-<p>認証結果の返却先: <strong>${redirectHost}</strong></p>
-${loopbackWarning}
-<p>許可する操作:</p>
-${scopes}
-${error}
-<form method="post" action="${escapeHtml(actionUrl)}">
-<input type="hidden" name="handle" value="${escapeHtml(handle)}">
-<label for="password"><strong>管理パスワード</strong></label>
-<input id="password" type="password" name="password" autocomplete="current-password" placeholder="Cloudflareに登録済みのMCP_AUTH_TOKEN" required>
-<p><small>これはFirestore MCPの管理者確認用です。ChatGPTには保存・送信されません。</small></p>
-<button class="allow" type="submit" name="decision" value="approve">アクセスを許可</button>
-<button class="deny" type="submit" name="decision" value="deny" formnovalidate>拒否</button>
-</form>
-</main>
-</body>
-</html>`;
+  const html = [
+    "<!doctype html><html lang=\"ja\"><head><meta charset=\"utf-8\">",
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    "<title>Firestore MCP 接続許可</title>",
+    "<style>",
+    "body{font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:1.25rem;background:#f5f7fa;color:#18212b}",
+    ".card{background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:24px}",
+    "h1{font-size:1.4rem}p,small{line-height:1.6;color:#4e5b68}",
+    "input,button{box-sizing:border-box;width:100%;padding:12px;margin:8px 0;font:inherit;border-radius:8px}",
+    "input{border:1px solid #b8c2cc}button{background:#1769aa;color:white;border:0;font-weight:700;cursor:pointer}",
+    ".deny{background:#e8edf2;color:#23303d}.error{color:#9b2424;background:#fff0f0;padding:10px;border-radius:8px}",
+    "</style></head><body><main class=\"card\">",
+    "<h1>Firestore MCPへのアクセスを許可しますか？</h1>",
+    "<p><strong>" + escapeHtml(values.clientId) + "</strong> が、設定済みのFirestoreデータベース（keywords / tweets）にアクセスします。</p>",
+    "<p>許可される操作はFirestoreの読み取り・作成・更新・削除です。</p>",
+    error,
+    '<form method="post" action="' + escapeHtml(values.action) + '">',
+    hidden,
+    '<label>管理用アクセスキー（Cloudflareの MCP_AUTH_TOKEN）',
+    '<input name="access_key" type="password" autocomplete="current-password" required></label>',
+    "<small>既存の MCP_AUTH_TOKEN を入力してください。ChatGPTへこの値は渡されません。</small>",
+    '<button type="submit" name="decision" value="approve">許可して接続</button>',
+    '<button class="deny" type="submit" name="decision" value="deny" formnovalidate>拒否</button>',
+    "</form></main></body></html>"
+  ].join("");
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    }
+  });
 }
 
-function pageResponse(
-  html: string,
-  headers: HeadersInit = {},
-  status = 200
-): Response {
-  const responseHeaders = new Headers(headers);
-  responseHeaders.set("Content-Type", "text/html; charset=utf-8");
-  responseHeaders.set("Cache-Control", "no-store");
-  responseHeaders.set("Pragma", "no-cache");
-  responseHeaders.set("X-Content-Type-Options", "nosniff");
-  responseHeaders.set("X-Frame-Options", "DENY");
-  responseHeaders.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
-  return new Response(html, { status, headers: responseHeaders });
+async function authorizeGet(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const redirectUri = safeOAuthRedirect(url.searchParams.get("redirect_uri") ?? "");
+  const clientId = url.searchParams.get("client_id") ?? "";
+  const responseType = url.searchParams.get("response_type") ?? "";
+  const challenge = url.searchParams.get("code_challenge") ?? "";
+  const method = url.searchParams.get("code_challenge_method") ?? "";
+  const state = url.searchParams.get("state") ?? "";
+  const resource = url.searchParams.get("resource") ?? resourceOf(request);
+
+  let scope: string[];
+  try {
+    scope = parseOAuthScopes(url.searchParams.get("scope") ?? "");
+  } catch {
+    return new Response("Unsupported OAuth scope.", { status: 400 });
+  }
+
+  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+    return new Response("MCP_AUTH_TOKEN is not configured.", { status: 503 });
+  }
+  if (
+    responseType !== "code" ||
+    !redirectUri ||
+    !clientId ||
+    clientId.length > 512 ||
+    !/^[A-Za-z0-9._~:-]+$/.test(clientId) ||
+    !/^[A-Za-z0-9_-]{43,128}$/.test(challenge) ||
+    method !== "S256" ||
+    state.length > 2048 ||
+    resource !== resourceOf(request)
+  ) {
+    return new Response("Invalid OAuth authorization request.", { status: 400 });
+  }
+
+  return authorizationPage({
+    action: url.origin + "/oauth/authorize",
+    clientId,
+    redirectUri: redirectUri.toString(),
+    state,
+    scope: scope.join(" "),
+    challenge
+  });
 }
 
-async function authorize(request: Request, env: Env): Promise<Response> {
-  const oauth = env.OAUTH_PROVIDER;
-  if (!oauth) return new Response("OAuth is not configured.", { status: 503 });
+async function authorizePost(request: Request, env: Env): Promise<Response> {
+  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+    return new Response("MCP_AUTH_TOKEN is not configured.", { status: 503 });
+  }
+  const form = await request.formData();
+  const redirectUri = safeOAuthRedirect(String(form.get("redirect_uri") ?? ""));
+  const clientId = String(form.get("client_id") ?? "");
+  const state = String(form.get("state") ?? "");
+  const challenge = String(form.get("code_challenge") ?? "");
+  const method = String(form.get("code_challenge_method") ?? "");
+  const decision = String(form.get("decision") ?? "approve");
+  let scope: string[];
 
   try {
-    const authRequest = await oauth.parseAuthRequest(request);
-
-    if (request.method === "GET") {
-      const details = await oauth.describeConsent(authRequest);
-      const consent = await oauth.beginConsent(authRequest);
-      return pageResponse(authorizationPage(details, consent.handle, request.url), consent.headers);
-    }
-
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
-    }
-
-    const form = await request.formData();
-    const handle = String(form.get("handle") ?? "");
-    const decision = String(form.get("decision") ?? "approve");
-
-    if (decision === "deny") {
-      const denied = await oauth.denyConsent(request, handle);
-      const headers = new Headers(denied.headers);
-      headers.set("Location", denied.redirectTo);
-      return new Response(null, { status: 302, headers });
-    }
-
-    const password = String(form.get("password") ?? "");
-    if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32 || !safeEqual(password, env.MCP_AUTH_TOKEN)) {
-      const details = await oauth.describeConsent(authRequest);
-      return pageResponse(
-        authorizationPage(details, handle, request.url, "管理パスワードが正しくありません。"),
-        {},
-        401
-      );
-    }
-
-    const selectedScopes = form.getAll("scope").map(String);
-    const approved = await oauth.approveConsent(request, handle, { scope: selectedScopes });
-    const client = await oauth.lookupClient(approved.request.clientId);
-    const completed = await oauth.completeAuthorization({
-      request: approved.request,
-      userId: "firestore-owner",
-      metadata: { clientName: client?.clientName ?? "ChatGPT" },
-      scope: approved.request.scope,
-      props: { userId: "firestore-owner" }
-    });
-
-    const headers = new Headers(approved.headers);
-    headers.set("Location", completed.redirectTo);
-    return new Response(null, { status: 302, headers });
-  } catch (error) {
-    if (error instanceof AuthorizationError) {
-      if (error.redirectTo) return Response.redirect(error.redirectTo, 302);
-      return new Response(error.description, { status: 400 });
-    }
-    throw error;
+    scope = parseOAuthScopes(String(form.get("scope") ?? ""));
+  } catch {
+    return new Response("Unsupported OAuth scope.", { status: 400 });
   }
+
+  if (decision === "deny") {
+    if (!redirectUri) return new Response("Invalid redirect URI.", { status: 400 });
+    redirectUri.searchParams.set("error", "access_denied");
+    if (state) redirectUri.searchParams.set("state", state);
+    return Response.redirect(redirectUri.toString(), 302);
+  }
+
+  const accessKey = String(form.get("access_key") ?? "");
+  if (
+    !redirectUri ||
+    !clientId ||
+    !/^[A-Za-z0-9._~:-]+$/.test(clientId) ||
+    !/^[A-Za-z0-9_-]{43,128}$/.test(challenge) ||
+    method !== "S256" ||
+    state.length > 2048 ||
+    !sameAccessKey(accessKey, env.MCP_AUTH_TOKEN)
+  ) {
+    return new Response("Authorization denied. Check the access key and authorization request.", { status: 401 });
+  }
+
+  const resource = resourceOf(request);
+  const code = await signOAuthToken("code", {
+    redirectUri: redirectUri.toString(),
+    clientId,
+    challenge,
+    scope: scope.join(" "),
+    aud: resource
+  }, env.MCP_AUTH_TOKEN);
+
+  redirectUri.searchParams.set("code", code);
+  if (state) redirectUri.searchParams.set("state", state);
+  return Response.redirect(redirectUri.toString(), 302);
 }
 
-const oauthProvider = new OAuthProvider<Env>({
-  apiRoute: "/mcp",
-  apiHandler: {
-    async fetch(request, env, ctx) {
-      const auth = (ctx as ExecutionContext & { auth?: OAuthResourceAuth }).auth;
-      if (!auth?.scope.includes(FIRESTORE_SCOPE)) {
-        return new Response("Insufficient scope.", { status: 403 });
-      }
-      return mcpHandler(request, env);
+async function tokenPost(request: Request, env: Env): Promise<Response> {
+  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) {
+    return jsonResponse({ error: "server_error", error_description: "MCP_AUTH_TOKEN is not configured." }, 503);
+  }
+  const form = await request.formData();
+  const grantType = String(form.get("grant_type") ?? "");
+  const resource = String(form.get("resource") ?? resourceOf(request));
+  const clientId = String(form.get("client_id") ?? "");
+
+  if (resource !== resourceOf(request)) {
+    return jsonResponse({ error: "invalid_target" }, 400);
+  }
+
+  if (grantType === "refresh_token") {
+    const refresh = await verifyOAuthToken(
+      String(form.get("refresh_token") ?? ""),
+      "refresh",
+      env.MCP_AUTH_TOKEN
+    );
+    if (
+      !refresh ||
+      refresh.aud !== resource ||
+      typeof refresh.clientId !== "string" ||
+      (clientId && refresh.clientId !== clientId)
+    ) {
+      return jsonResponse({ error: "invalid_grant" }, 400);
     }
-  },
-  defaultHandler: {
-    async fetch(request, env) {
-      const url = new URL(request.url);
-      if (url.pathname === "/authorize") return authorize(request, env);
-      if (url.pathname === "/health" && request.method === "GET") {
-        return Response.json({ ok: true, service: "firestore-mcp", auth: "oauth" });
-      }
-      return new Response("Not Found", { status: 404 });
-    }
-  },
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/oauth/token",
-  scopesSupported: [FIRESTORE_SCOPE, "offline_access"],
-  resourceMetadata: {
-    resource: MCP_RESOURCE,
-    authorization_servers: [OAUTH_ISSUER],
-    resource_name: "Firestore MCP"
-  },
-  requiredScopes: [FIRESTORE_SCOPE],
-  clientIdMetadataDocumentEnabled: true,
-  refreshTokenTTL: 30 * 24 * 60 * 60
-});
+
+    const scope = String(refresh.scope ?? FIRESTORE_SCOPE);
+    const accessToken = await signOAuthToken("access", {
+      clientId: refresh.clientId,
+      scope,
+      aud: resource
+    }, env.MCP_AUTH_TOKEN);
+    const newRefreshToken = await signOAuthToken("refresh", {
+      clientId: refresh.clientId,
+      scope,
+      aud: resource
+    }, env.MCP_AUTH_TOKEN);
+    return jsonResponse({
+      access_token: accessToken,
+      refresh_token: newRefreshToken,
+      token_type: "Bearer",
+      expires_in: 3600,
+      scope
+    });
+  }
+
+  if (grantType !== "authorization_code") {
+    return jsonResponse({ error: "unsupported_grant_type" }, 400);
+  }
+
+  const code = await verifyOAuthToken(
+    String(form.get("code") ?? ""),
+    "code",
+    env.MCP_AUTH_TOKEN
+  );
+  const verifier = String(form.get("code_verifier") ?? "");
+  const redirectUri = String(form.get("redirect_uri") ?? "");
+  const codeClientId = clientId || String(code?.clientId ?? "");
+
+  if (
+    !code ||
+    !verifier ||
+    typeof code.redirectUri !== "string" ||
+    code.redirectUri !== redirectUri ||
+    typeof code.clientId !== "string" ||
+    code.clientId !== codeClientId ||
+    code.aud !== resource ||
+    await pkceChallenge(verifier) !== code.challenge
+  ) {
+    return jsonResponse({ error: "invalid_grant" }, 400);
+  }
+
+  const scope = String(code.scope ?? FIRESTORE_SCOPE);
+  const accessToken = await signOAuthToken("access", {
+    clientId: code.clientId,
+    scope,
+    aud: resource
+  }, env.MCP_AUTH_TOKEN);
+  const refreshToken = await signOAuthToken("refresh", {
+    clientId: code.clientId,
+    scope,
+    aud: resource
+  }, env.MCP_AUTH_TOKEN);
+
+  return jsonResponse({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_type: "Bearer",
+    expires_in: 3600,
+    scope
+  });
+}
+
+function authorizationServerMetadata(request: Request): Response {
+  const origin = originOf(request);
+  return jsonResponse({
+    issuer: origin,
+    authorization_endpoint: origin + "/oauth/authorize",
+    token_endpoint: origin + "/oauth/token",
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    token_endpoint_auth_methods_supported: ["none"],
+    code_challenge_methods_supported: ["S256"],
+    scopes_supported: [FIRESTORE_SCOPE, "offline_access"]
+  });
+}
+
+function protectedResourceMetadata(request: Request): Response {
+  const origin = originOf(request);
+  return jsonResponse({
+    resource: origin + "/mcp",
+    authorization_servers: [origin],
+    scopes_supported: [FIRESTORE_SCOPE],
+    bearer_methods_supported: ["header"]
+  });
+}
+
+async function authorized(request: Request, env: Env): Promise<boolean> {
+  if (!env.MCP_AUTH_TOKEN || env.MCP_AUTH_TOKEN.length < 32) return false;
+  const token = extractBearerToken(request.headers.get("authorization"));
+  if (!token) return false;
+
+  // Keep the original direct agent bearer-token mode available.
+  if (safeEqual(token, env.MCP_AUTH_TOKEN)) return true;
+
+  const access = await verifyOAuthToken(token, "access", env.MCP_AUTH_TOKEN);
+  return Boolean(
+    access &&
+    access.aud === resourceOf(request) &&
+    typeof access.scope === "string" &&
+    access.scope.split(/\s+/).includes(FIRESTORE_SCOPE)
+  );
+}
+
+async function handleMcp(request: Request, env: Env): Promise<Response> {
+  if (!(await authorized(request, env))) {
+    const metadataUrl = originOf(request) + "/.well-known/oauth-protected-resource/mcp";
+    const response = jsonResponse({ error: "Unauthorized" }, 401);
+    response.headers.set("WWW-Authenticate", 'Bearer resource_metadata="' + metadataUrl + '"');
+    return response;
+  }
+  const handler = createMcpHandler(() => createServer(env), { legacy: "stateless" });
+  return handler.fetch(request);
+}
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Keep the existing bearer-token deployment working until its KV namespace is bound.
-    if (!env.OAUTH_KV) return legacyFetch(request, env);
-    return oauthProvider.fetch(request, env, ctx);
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/health" && request.method === "GET") {
+      return jsonResponse({ ok: true, service: "firestore-mcp", auth: "oauth-stateless", storage: "none" });
+    }
+    if (
+      (url.pathname === "/.well-known/oauth-protected-resource" ||
+       url.pathname === "/.well-known/oauth-protected-resource/mcp") &&
+      request.method === "GET"
+    ) return protectedResourceMetadata(request);
+    if (url.pathname === "/.well-known/oauth-authorization-server" && request.method === "GET") {
+      return authorizationServerMetadata(request);
+    }
+    if (url.pathname === "/oauth/authorize" && request.method === "GET") return authorizeGet(request, env);
+    if (url.pathname === "/oauth/authorize" && request.method === "POST") return authorizePost(request, env);
+    if (url.pathname === "/oauth/token" && request.method === "POST") return tokenPost(request, env);
+    if (url.pathname === "/mcp") return handleMcp(request, env);
+    return new Response("Not Found", { status: 404 });
   }
 };
