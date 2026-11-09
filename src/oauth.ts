@@ -122,7 +122,7 @@ export function basicOwnerAuthorizationMatches(
   try {
     const binary = atob(match[1]!);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    const credentials = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const credentials = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     const separator = credentials.indexOf(":");
     if (separator < 0 || credentials.slice(0, separator) !== "owner") return false;
     return sameAccessKey(credentials.slice(separator + 1), expected);
