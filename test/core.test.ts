@@ -42,7 +42,7 @@ test("uses a length-aware constant-time token comparison", () => {
 
 test("extracts RFC-style bearer credentials without accepting other schemes", () => {
   assert.equal(extractBearerToken("Bearer abc123"), "abc123");
-  assert.equal(extractBearerToken("bearer\\tcase-insensitive"), "case-insensitive");
+  assert.equal(extractBearerToken("bearer\tcase-insensitive"), "case-insensitive");
   assert.equal(extractBearerToken("Basic abc123"), null);
   assert.equal(extractBearerToken("Bearer"), null);
   assert.equal(extractBearerToken(null), null);
