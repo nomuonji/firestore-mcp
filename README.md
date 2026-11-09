@@ -5,10 +5,11 @@ A generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It i
 ## Features
 
 - Streamable HTTP MCP endpoint: `/mcp`.
-- One service account can access multiple Firestore projects via aliases.
-- OAuth 2.1 authorization code flow with PKCE (S256), CIMD client identification, resource-bound access tokens, refresh-token rotation, and consent.
-- Cloudflare's maintained `@cloudflare/workers-oauth-provider` handles OAuth discovery, token issuance/validation, and token storage.
-- The service-account key remains inside the Worker and is never sent to ChatGPT.
+- One dedicated Google service account can access multiple Firestore projects through aliases.
+- OAuth 2.1 authorization code flow with PKCE (S256), using stateless HMAC-signed codes and tokens.
+- The existing `MCP_AUTH_TOKEN` is the shared HMAC signing key, the direct bearer key for trusted agents, and the owner password shown on the OAuth consent page.
+- No KV, D1, Durable Object, database, or other OAuth session store is needed.
+- Dashboard-managed Worker variables are preserved on deployment by `keep_vars: true`.
 
 ## MCP tools
 
@@ -27,95 +28,83 @@ A generic, multi-project Firestore MCP server hosted on Cloudflare Workers. It i
 
 Create one dedicated service account in an existing project. Grant it `roles/datastore.user` in every target Firestore project. The service-account key is used only by the Worker.
 
-## Cloudflare Worker setup
+## Cloudflare Worker configuration
 
-### 1. Create an OAuth KV namespace
+Set these three runtime variables on the Worker. They may be managed in Cloudflare Dashboard; the repository deliberately does not contain their values.
 
-OAuth authorization codes, grants, and tokens need server-side storage. Create one free Workers KV namespace:
-
-```bash
-npx wrangler login
-npx wrangler kv namespace create FIRESTORE_MCP_OAUTH
-```
-
-The command returns a namespace ID. Add it to `wrangler.jsonc` as the `OAUTH_KV` binding:
-
-```jsonc
-"kv_namespaces": [
-  { "binding": "OAUTH_KV", "id": "PASTE_THE_RETURNED_NAMESPACE_ID" }
-]
-```
-
-The namespace ID is configuration, not a credential. Keep it in the repository config. The OAuth provider stores authorization data in this namespace; do not use a namespace shared with another application.
-
-The Worker continues to serve the old Bearer-token mode until this binding is present. After adding the binding and deploying, OAuth becomes active.
-
-### 2. Configure Worker variables
-
-Keep these names exactly as shown:
-
-- `MCP_AUTH_TOKEN`: long random owner password (at least 32 characters). The browser asks for it on the OAuth consent page. It is not the MCP access token and is not entered into ChatGPT's OAuth client fields.
-- `FIRESTORE_SERVICE_ACCOUNT_JSON`: complete Google service-account JSON key.
-- `FIRESTORE_DATABASES`: target aliases.
+| Variable | Purpose |
+| --- | --- |
+| `MCP_AUTH_TOKEN` | Random owner key (at least 32 characters); also signs stateless OAuth tokens. |
+| `FIRESTORE_SERVICE_ACCOUNT_JSON` | Complete Google service-account JSON key. |
+| `FIRESTORE_DATABASES` | JSON alias map for the target Firestore projects. |
 
 Example `FIRESTORE_DATABASES`:
 
 ```json
 {
-  "keywords": { "projectId": "precise-armor-390514", "databaseId": "(default)" },
-  "tweets": { "projectId": "selection-to-spreadsheet", "databaseId": "(default)" }
+  "keywords": { "projectId": "YOUR_KEYWORDS_PROJECT_ID", "databaseId": "(default)" },
+  "tweets": { "projectId": "YOUR_TWEETS_PROJECT_ID", "databaseId": "(default)" }
 }
 ```
 
-Use Cloudflare Worker variables or secrets. The service-account JSON and owner password should preferably be Secrets; the Worker code reads either binding identically. Never put their values in GitHub.
+**Important:** `wrangler.jsonc` sets `keep_vars: true`. This is intentional: Cloudflare normally removes Dashboard-managed plaintext variables when the next Wrangler deployment does not declare them. With `keep_vars: true`, dashboard-managed variables remain in place. This does not restore variables that were already removed by a previous deployment.
 
-### 3. Deploy and verify
+Do not commit actual credentials or put them in GitHub.
 
-```bash
-npm install
-npm run check
-npx wrangler deploy
-```
+## OAuth protocol
 
-Check:
+OAuth is stateless and uses the same HMAC-SHA256 pattern as the existing Tweets Operator MCP.
 
-- `GET /health` returns a static service status.
-- `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-authorization-server` return OAuth discovery metadata.
-- An unauthenticated MCP call to `/mcp` returns 401 with a `resource_metadata` challenge.
-- After ChatGPT authorization, MCP calls include a valid resource-bound OAuth bearer token.
-
-### 4. Connect ChatGPT
-
-Create a custom MCP connector using:
-
-- Connection URL: `https://firestore-mcp.youfree731.workers.dev/mcp`
-- Authentication: `OAuth`
-- Client registration: choose **Client Identifier Metadata Document (CIMD)** when offered. Do not choose User-Defined OAuth Client; there is no client secret to enter.
-- Allow the connector to discover the authorization and token URLs from the server metadata.
-
-When ChatGPT opens the authorization page, enter the `MCP_AUTH_TOKEN` owner password stored in Worker settings, then explicitly approve Firestore access.
-
-## OAuth behavior
-
-- OAuth issuer: `https://firestore-mcp.youfree731.workers.dev`
-- Resource: `https://firestore-mcp.youfree731.workers.dev/mcp`
-- Authorization endpoint: `/authorize`
+- Issuer: `https://firestore-mcp.youfree731.workers.dev`
+- Protected resource: `https://firestore-mcp.youfree731.workers.dev/mcp`
+- Authorization endpoint: `/oauth/authorize`
 - Token endpoint: `/oauth/token`
-- Supported scopes: `firestore:access`, `offline_access`
-- CIMD is enabled; DCR is intentionally not exposed.
-- Only the configured ChatGPT resource receives tokens. The authorization page displays the client/domain and redirect hostname before approval.
+- Authorization server metadata: `/.well-known/oauth-authorization-server`
+- Protected resource metadata: `/.well-known/oauth-protected-resource/mcp`
+- Scopes: `firestore:access`, `offline_access`
+- PKCE: S256 only
+- Client authentication: `none`; no client secret required
 
-## Security notes
+Token lifetimes:
 
-- Firestore server credentials bypass Firebase Security Rules. IAM is enforced through `roles/datastore.user`.
-- `MCP_AUTH_TOKEN` is the owner sign-in password after OAuth is enabled; rotate it if exposed.
-- OAuth tokens, grants, and authorization codes are managed by Cloudflare's OAuth provider and stored in Workers KV.
-- `delete_document` still requires explicit `confirm: true` and the exact `updateTime`.
-- The Worker does not return Google credentials, project resource names, or raw upstream error bodies.
+- Authorization code: 5 minutes
+- Access token: 1 hour
+- Refresh token: 30 days
+
+The authorization code and tokens are signed self-contained values. They are validated cryptographically using `MCP_AUTH_TOKEN`; no server-side OAuth records are created.
+
+Because this design intentionally has no storage, authorization codes are not tracked as consumed and cannot be individually revoked. PKCE and the 5-minute code lifetime limit exposure. Changing `MCP_AUTH_TOKEN` invalidates all outstanding OAuth tokens and direct bearer access immediately; users then authorize again.
+
+## Connect from ChatGPT
+
+In **Plugins → Add custom MCP server**:
+
+- Name: `Firestore MCP`
+- Connection: `https://firestore-mcp.youfree731.workers.dev/mcp`
+- Authentication: `OAuth`
+- Client registration: **User-Defined OAuth Client**
+- OAuth Client ID: `firestore-mcp-chatgpt`
+- OAuth Client Secret: leave blank
+- Token endpoint auth method: `none`
+- Scopes: `firestore:access offline_access`
+- PKCE: enabled / S256
+- OIDC: disabled
+
+Auth URL, Token URL, issuer, and Resource should be discovered from the metadata after the Worker is redeployed. Do not select DCR or CIMD for this server; those registration modes are not implemented.
+
+When ChatGPT opens the authorization page, enter the existing Cloudflare `MCP_AUTH_TOKEN` value. This is an owner confirmation step; it is never given to ChatGPT as its OAuth client secret. After approval, ChatGPT receives a short-lived signed OAuth access token and refresh token.
+
+## Runtime checks
+
+- `GET /health` returns only static service status.
+- `GET /.well-known/oauth-authorization-server` returns OAuth discovery metadata.
+- `GET /.well-known/oauth-protected-resource/mcp` returns protected resource metadata.
+- An unauthenticated request to `/mcp` returns a 401 OAuth resource-metadata challenge.
+- A valid signed OAuth access token or the original direct `MCP_AUTH_TOKEN` bearer key can call MCP tools.
 
 ## Local development
 
-Copy `.dev.vars.example` to `.dev.vars`, create a development KV namespace and bind it in `wrangler.jsonc`, then:
+Copy `.dev.vars.example` to `.dev.vars`, replace the placeholders with local values, then:
 
 ```bash
 npm install
