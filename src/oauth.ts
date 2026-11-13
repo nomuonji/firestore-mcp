@@ -131,11 +131,18 @@ export function basicOwnerAuthorizationMatches(
   }
 }
 
-/** Restrict OAuth redirects to ChatGPT's callback domain (plus loopback for local testing). */
+/** Restrict OAuth redirects to ChatGPT's and Claude's callbacks (plus loopback for local testing). */
 export function safeOAuthRedirect(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol === "https:" && (url.hostname === "chatgpt.com" || url.hostname.endsWith(".chatgpt.com"))) {
+      return url;
+    }
+    if (
+      url.protocol === "https:" &&
+      url.hostname === "claude.ai" &&
+      url.pathname === "/api/mcp/auth_callback"
+    ) {
       return url;
     }
     if (

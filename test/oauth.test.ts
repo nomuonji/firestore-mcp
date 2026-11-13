@@ -38,6 +38,9 @@ test("rejects OAuth token tampering and redirects outside ChatGPT", async () => 
   const changedSignature = (signature?.[0] === "A" ? "B" : "A") + (signature?.slice(1) ?? "");
   assert.equal(await verifyOAuthToken(body + "." + changedSignature, "access", secret), null);
   assert.equal(safeOAuthRedirect("https://chatgpt.com/connector/oauth/callback")?.hostname, "chatgpt.com");
+  assert.equal(safeOAuthRedirect("https://claude.ai/api/mcp/auth_callback")?.hostname, "claude.ai");
+  assert.equal(safeOAuthRedirect("https://claude.ai/other"), null);
+  assert.equal(safeOAuthRedirect("https://evil.claude.ai/api/mcp/auth_callback"), null);
   assert.equal(safeOAuthRedirect("https://evil.example/steal"), null);
   assert.equal(safeOAuthRedirect("javascript:alert(1)"), null);
 });

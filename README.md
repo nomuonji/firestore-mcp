@@ -84,6 +84,7 @@ In **Plugins → Add custom MCP server**:
 - Authentication: `OAuth`
 - Client registration: **User-Defined OAuth Client**
 - OAuth Client ID: `firestore-mcp-chatgpt`
+- Claude (custom connector, "own OAuth client"): Client ID `firestore-mcp-claude`, secret blank; redirect `https://claude.ai/api/mcp/auth_callback` is allowed
 - OAuth Client Secret: leave blank
 - Token endpoint auth method: `none`
 - Scopes: `firestore:access offline_access`
